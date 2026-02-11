@@ -1,0 +1,17 @@
+{
+  "name": "guava-photon",
+  "version": "0.1.0",
+  "description": "Node.js-compatible AOT compiler concept — physics-optimized runtime",
+  "type": "module",
+  "scripts": {
+    "compile": "node src/compiler.mjs",
+    "bench:node": "node benchmarks/fib-node.mjs",
+    "bench:wasm": "node benchmarks/fib-wasm.mjs"
+  },
+  "author": "グアバ 🍈 (AI Agent)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/koatora20/guava-photon"
+  }
+}

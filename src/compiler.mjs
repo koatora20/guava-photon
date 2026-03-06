@@ -37,6 +37,7 @@ const TokenType = {
   ELSE: 'ELSE',
   CONST: 'CONST',
   LET: 'LET',
+  FOR: 'FOR',
   EOF: 'EOF',
 };
 
@@ -45,29 +46,31 @@ function tokenize(src) {
   let i = 0;
   while (i < src.length) {
     if (/\s/.test(src[i])) { i++; continue; }
-    if (src[i] === '/' && src[i+1] === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
-    
-    const simple = { '+': TokenType.PLUS, '-': TokenType.MINUS, '*': TokenType.STAR, '/': TokenType.SLASH,
+    if (src[i] === '/' && src[i + 1] === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+
+    const simple = {
+      '+': TokenType.PLUS, '-': TokenType.MINUS, '*': TokenType.STAR, '/': TokenType.SLASH,
       '(': TokenType.LPAREN, ')': TokenType.RPAREN, '{': TokenType.LBRACE, '}': TokenType.RBRACE,
-      ':': TokenType.COLON, ';': TokenType.SEMICOLON, ',': TokenType.COMMA };
-    
+      ':': TokenType.COLON, ';': TokenType.SEMICOLON, ',': TokenType.COMMA
+    };
+
     if (simple[src[i]]) { tokens.push({ type: simple[src[i]] }); i++; continue; }
-    
-    if (src[i] === '<') { if (src[i+1] === '=') { tokens.push({ type: TokenType.LTEQ }); i += 2; } else { tokens.push({ type: TokenType.LT }); i++; } continue; }
-    if (src[i] === '>') { if (src[i+1] === '=') { tokens.push({ type: TokenType.GTEQ }); i += 2; } else { tokens.push({ type: TokenType.GT }); i++; } continue; }
-    if (src[i] === '=') { if (src[i+1] === '=') { tokens.push({ type: TokenType.EQEQ }); i += 2; } else { tokens.push({ type: TokenType.EQ }); i++; } continue; }
-    
+
+    if (src[i] === '<') { if (src[i + 1] === '=') { tokens.push({ type: TokenType.LTEQ }); i += 2; } else { tokens.push({ type: TokenType.LT }); i++; } continue; }
+    if (src[i] === '>') { if (src[i + 1] === '=') { tokens.push({ type: TokenType.GTEQ }); i += 2; } else { tokens.push({ type: TokenType.GT }); i++; } continue; }
+    if (src[i] === '=') { if (src[i + 1] === '=') { tokens.push({ type: TokenType.EQEQ }); i += 2; } else { tokens.push({ type: TokenType.EQ }); i++; } continue; }
+
     if (/[0-9]/.test(src[i])) {
       let num = '';
       while (i < src.length && /[0-9.]/.test(src[i])) num += src[i++];
       tokens.push({ type: TokenType.NUMBER, value: parseFloat(num) });
       continue;
     }
-    
+
     if (/[a-zA-Z_]/.test(src[i])) {
       let id = '';
       while (i < src.length && /[a-zA-Z0-9_]/.test(src[i])) id += src[i++];
-      const keywords = { 'return': TokenType.RETURN, 'function': TokenType.FUNCTION, 'if': TokenType.IF, 'else': TokenType.ELSE, 'const': TokenType.CONST, 'let': TokenType.LET };
+      const keywords = { 'return': TokenType.RETURN, 'function': TokenType.FUNCTION, 'if': TokenType.IF, 'else': TokenType.ELSE, 'const': TokenType.CONST, 'let': TokenType.LET, 'for': TokenType.FOR };
       tokens.push(keywords[id] ? { type: keywords[id] } : { type: TokenType.IDENT, value: id });
       continue;
     }
@@ -88,7 +91,7 @@ function parse(tokens) {
   const match = (t) => { if (tokens[pos].type === t) return tokens[pos++]; return null; };
 
   function parseExpr() { return parseComparison(); }
-  
+
   function parseComparison() {
     let left = parseAdditive();
     while ([TokenType.LT, TokenType.LTEQ, TokenType.GT, TokenType.GTEQ, TokenType.EQEQ].includes(peek().type)) {
@@ -98,7 +101,7 @@ function parse(tokens) {
     }
     return left;
   }
-  
+
   function parseAdditive() {
     let left = parseMultiplicative();
     while ([TokenType.PLUS, TokenType.MINUS].includes(peek().type)) {
@@ -107,7 +110,7 @@ function parse(tokens) {
     }
     return left;
   }
-  
+
   function parseMultiplicative() {
     let left = parsePrimary();
     while ([TokenType.STAR, TokenType.SLASH].includes(peek().type)) {
@@ -116,7 +119,7 @@ function parse(tokens) {
     }
     return left;
   }
-  
+
   function parsePrimary() {
     if (match(TokenType.LPAREN)) { const e = parseExpr(); eat(TokenType.RPAREN); return e; }
     if (peek().type === TokenType.NUMBER) return { type: 'Num', value: eat(TokenType.NUMBER).value };
@@ -132,10 +135,11 @@ function parse(tokens) {
     }
     throw new Error(`Unexpected token: ${peek().type}`);
   }
-  
+
   function parseStmt() {
     if (match(TokenType.RETURN)) { const e = parseExpr(); match(TokenType.SEMICOLON); return { type: 'Return', value: e }; }
     if (peek().type === TokenType.IF) return parseIf();
+    if (peek().type === TokenType.FOR) return parseFor();
     if (match(TokenType.CONST) || match(TokenType.LET)) {
       const name = eat(TokenType.IDENT).value;
       if (match(TokenType.COLON)) { eat(TokenType.IDENT); } // skip type annotation
@@ -144,9 +148,55 @@ function parse(tokens) {
       match(TokenType.SEMICOLON);
       return { type: 'VarDecl', name, init };
     }
+    // Assignment: name = expr;
+    if (peek().type === TokenType.IDENT) {
+      const saved = pos;
+      const name = eat(TokenType.IDENT).value;
+      if (peek().type === TokenType.EQ) {
+        eat(TokenType.EQ);
+        const value = parseExpr();
+        match(TokenType.SEMICOLON);
+        return { type: 'Assign', name, value };
+      }
+      // Not assignment, backtrack and parse as expression
+      pos = saved;
+    }
     const e = parseExpr(); match(TokenType.SEMICOLON); return { type: 'ExprStmt', expr: e };
   }
-  
+
+  function parseFor() {
+    eat(TokenType.FOR);
+    eat(TokenType.LPAREN);
+    // init: let/const or assignment
+    let init;
+    if (peek().type === TokenType.LET || peek().type === TokenType.CONST) {
+      match(TokenType.LET) || match(TokenType.CONST);
+      const name = eat(TokenType.IDENT).value;
+      if (match(TokenType.COLON)) { eat(TokenType.IDENT); }
+      eat(TokenType.EQ);
+      const initExpr = parseExpr();
+      match(TokenType.SEMICOLON);
+      init = { type: 'VarDecl', name, init: initExpr };
+    } else {
+      const name = eat(TokenType.IDENT).value;
+      eat(TokenType.EQ);
+      const initExpr = parseExpr();
+      match(TokenType.SEMICOLON);
+      init = { type: 'Assign', name, value: initExpr };
+    }
+    // condition
+    const cond = parseExpr();
+    match(TokenType.SEMICOLON);
+    // update: name = expr
+    const updateName = eat(TokenType.IDENT).value;
+    eat(TokenType.EQ);
+    const updateExpr = parseExpr();
+    const update = { type: 'Assign', name: updateName, value: updateExpr };
+    eat(TokenType.RPAREN);
+    const body = parseBlock();
+    return { type: 'ForLoop', init, cond, update, body };
+  }
+
   function parseIf() {
     eat(TokenType.IF);
     eat(TokenType.LPAREN);
@@ -157,7 +207,7 @@ function parse(tokens) {
     if (match(TokenType.ELSE)) elseBlock = parseBlock();
     return { type: 'If', cond, then, else: elseBlock };
   }
-  
+
   function parseBlock() {
     eat(TokenType.LBRACE);
     const stmts = [];
@@ -165,7 +215,7 @@ function parse(tokens) {
     eat(TokenType.RBRACE);
     return stmts;
   }
-  
+
   function parseFunction() {
     eat(TokenType.FUNCTION);
     const name = eat(TokenType.IDENT).value;
@@ -182,7 +232,7 @@ function parse(tokens) {
     const body = parseBlock();
     return { type: 'FuncDecl', name, params, body };
   }
-  
+
   const program = [];
   while (peek().type !== TokenType.EOF) {
     if (peek().type === TokenType.FUNCTION) program.push(parseFunction());
@@ -198,48 +248,71 @@ function parse(tokens) {
 function codegen(ast) {
   const functions = ast.filter(n => n.type === 'FuncDecl');
   let wat = '(module\n';
-  
+
   for (const fn of functions) {
     const locals = new Map();
     fn.params.forEach((p, i) => locals.set(p, i));
     let localIdx = fn.params.length;
-    
+
     function collectLocals(stmts) {
       for (const s of stmts) {
         if (s.type === 'VarDecl' && !locals.has(s.name)) { locals.set(s.name, localIdx++); }
         if (s.type === 'If') { collectLocals(s.then); if (s.else) collectLocals(s.else); }
+        if (s.type === 'ForLoop') {
+          if (s.init.type === 'VarDecl' && !locals.has(s.init.name)) { locals.set(s.init.name, localIdx++); }
+          collectLocals(s.body);
+        }
       }
     }
     collectLocals(fn.body);
-    
+
     const paramDecl = fn.params.map(p => `(param $${p} f64)`).join(' ');
     const extraLocals = [];
     locals.forEach((idx, name) => { if (idx >= fn.params.length) extraLocals.push(`(local $${name} f64)`); });
-    
+
     wat += `  (func $${fn.name} ${paramDecl} (result f64)\n`;
     if (extraLocals.length) wat += `    ${extraLocals.join(' ')}\n`;
-    
+
     function emitExpr(e) {
       if (e.type === 'Num') return `(f64.const ${e.value})`;
       if (e.type === 'Var') return `(local.get $${e.name})`;
       if (e.type === 'Call') return `(call $${e.name} ${e.args.map(emitExpr).join(' ')})`;
       if (e.type === 'BinOp') {
-        const ops = { PLUS: 'f64.add', MINUS: 'f64.sub', STAR: 'f64.mul', SLASH: 'f64.div',
-          LT: 'f64.lt', LTEQ: 'f64.le', GT: 'f64.gt', GTEQ: 'f64.ge', EQEQ: 'f64.eq' };
+        const ops = {
+          PLUS: 'f64.add', MINUS: 'f64.sub', STAR: 'f64.mul', SLASH: 'f64.div',
+          LT: 'f64.lt', LTEQ: 'f64.le', GT: 'f64.gt', GTEQ: 'f64.ge', EQEQ: 'f64.eq'
+        };
         const wasmOp = ops[e.op];
         const inner = `(${wasmOp} ${emitExpr(e.left)} ${emitExpr(e.right)})`;
-        if (['LT','LTEQ','GT','GTEQ','EQEQ'].includes(e.op)) {
+        if (['LT', 'LTEQ', 'GT', 'GTEQ', 'EQEQ'].includes(e.op)) {
           return `(select (f64.const 1) (f64.const 0) ${inner})`;
         }
         return inner;
       }
       throw new Error(`Unknown expr: ${e.type}`);
     }
-    
+
     function emitStmt(s) {
       if (s.type === 'Return') return `    (return ${emitExpr(s.value)})\n`;
       if (s.type === 'VarDecl') return `    (local.set $${s.name} ${emitExpr(s.init)})\n`;
+      if (s.type === 'Assign') return `    (local.set $${s.name} ${emitExpr(s.value)})\n`;
       if (s.type === 'ExprStmt') return `    ${emitExpr(s.expr)}\n    drop\n`;
+      if (s.type === 'ForLoop') {
+        let code = '';
+        code += emitStmt(s.init);
+        code += `    (block $break\n`;
+        code += `      (loop $continue\n`;
+        // condition check: if NOT cond, break
+        code += `        (br_if $break (i32.eqz (i32.trunc_f64_s ${emitExpr(s.cond)})))\n`;
+        // body
+        s.body.forEach(st => code += '    ' + emitStmt(st));
+        // update
+        code += '    ' + emitStmt(s.update);
+        code += `        (br $continue)\n`;
+        code += `      )\n`;
+        code += `    )\n`;
+        return code;
+      }
       if (s.type === 'If') {
         let code = `    (if (result f64) (i32.trunc_f64_s ${emitExpr(s.cond)})\n      (then\n`;
         s.then.forEach(st => code += '  ' + emitStmt(st));
@@ -256,12 +329,12 @@ function codegen(ast) {
       }
       throw new Error(`Unknown stmt: ${s.type}`);
     }
-    
+
     fn.body.forEach(s => { wat += emitStmt(s); });
     wat += `    (f64.const 0)\n  )\n`;
     wat += `  (export "${fn.name}" (func $${fn.name}))\n`;
   }
-  
+
   wat += ')\n';
   return wat;
 }

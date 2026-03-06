@@ -37,11 +37,8 @@ export class SessionKernel {
     contextRecall(conversationSummaries, openFiles, userMessage) {
         const startTime = performance.now();
 
-        // Extract keywords from user message
-        const keywords = userMessage
-            .toLowerCase()
-            .split(/[\s,。、！？\.\!\?]+/)
-            .filter(w => w.length > 2);
+        // Extract keywords from user message (using _tokenize for mixed JP/EN)
+        const keywords = this._tokenize(userMessage);
 
         // Score conversation summaries by keyword overlap
         const summaryScores = conversationSummaries.map((summary, idx) => {
@@ -86,46 +83,98 @@ export class SessionKernel {
     }
 
     // ============================================================
-    // Step 3: Episode Recall with WASM Tensor Scoring
+    // Tokenizer: extract semantic features from mixed JP/EN text
+    // ============================================================
+    _tokenize(text) {
+        const words = text
+            .toLowerCase()
+            .replace(/[,。、！？\.\!\?\(\)\[\]「」『』【】:;—\-]+/g, ' ')
+            // Split ASCII from Japanese characters
+            .replace(/([a-z0-9]+)([ぁ-んァ-ヶー一-龠々])/g, '$1 $2')
+            .replace(/([ぁ-んァ-ヶー一-龠々])([a-z0-9]+)/g, '$1 $2')
+            .split(/\s+/)
+            .filter(w => w.length > 1);
+
+        // Deduplicate while preserving order
+        const seen = new Set();
+        const unique = [];
+        for (const w of words) {
+            if (!seen.has(w)) { seen.add(w); unique.push(w); }
+        }
+
+        // Generate bigrams
+        const bigrams = [];
+        for (let i = 0; i < unique.length - 1; i++) {
+            bigrams.push(unique[i] + '_' + unique[i + 1]);
+        }
+
+        return [...unique, ...bigrams];
+    }
+
+    // ============================================================
+    // Step 3: Episode Recall with Semantic Title Embedding
     // ============================================================
     episodeRecall(episodes, priorityKeywords) {
         const startTime = performance.now();
 
-        // Q-value filtering: q >= 0.8 (WASM-accelerated via qDecay)
+        // Q-value filtering: q >= 0.8
         const highQ = episodes.filter(ep => (ep.q_value || 0) >= 0.8);
 
-        // Tag matching: vectorize tags and compute similarity
-        // Build keyword vector (binary encoding)
-        const allTags = [...new Set(episodes.flatMap(ep => ep.tags || []))];
-        const keywordVec = new Float64Array(allTags.length);
-        for (let i = 0; i < allTags.length; i++) {
-            keywordVec[i] = priorityKeywords.some(kw => allTags[i].includes(kw)) ? 1.0 : 0.0;
+        // Build unified vocabulary from ALL episodes (titles + tags) + query keywords
+        const queryTokens = this._tokenize(priorityKeywords.join(' '));
+
+        const allFeatures = new Set();
+        for (const kw of queryTokens) allFeatures.add(kw);
+        for (const ep of highQ) {
+            const titleTokens = this._tokenize(ep.title || '');
+            const tagTokens = (ep.tags || []).map(t => t.toLowerCase());
+            for (const t of titleTokens) allFeatures.add(t);
+            for (const t of tagTokens) allFeatures.add(t);
         }
 
-        // Score each episode by cosine similarity of tag vectors
+        const vocab = [...allFeatures];
+        const vocabIndex = new Map(vocab.map((v, i) => [v, i]));
+        const dim = vocab.length;
+
+        // Build query vector (BoW + bigrams from keywords)
+        const queryVec = new Float64Array(dim);
+        for (const token of queryTokens) {
+            const idx = vocabIndex.get(token);
+            if (idx !== undefined) queryVec[idx] = 1.0;
+        }
+
+        // Score each episode using unified embedding
         const scored = highQ.map(ep => {
-            const epTags = ep.tags || [];
-            const epVec = new Float64Array(allTags.length);
-            for (let i = 0; i < allTags.length; i++) {
-                epVec[i] = epTags.includes(allTags[i]) ? 1.0 : 0.0;
+            // Build episode vector from title tokens + tags
+            const epVec = new Float64Array(dim);
+            const titleTokens = this._tokenize(ep.title || '');
+            const tagTokens = (ep.tags || []).map(t => t.toLowerCase());
+
+            for (const t of titleTokens) {
+                const idx = vocabIndex.get(t);
+                if (idx !== undefined) epVec[idx] = 1.0;
+            }
+            for (const t of tagTokens) {
+                const idx = vocabIndex.get(t);
+                if (idx !== undefined) epVec[idx] = 1.5; // tags get higher weight
             }
 
-            // Use WASM tensor similarity if available
+            // WASM cosine similarity
             let similarity = 0;
-            if (this.runtime.instance && allTags.length > 0) {
-                similarity = this.runtime.tensor.similarity(keywordVec, epVec);
+            if (this.runtime.instance && dim > 0) {
+                similarity = this.runtime.tensor.similarity(queryVec, epVec);
             } else {
-                // Fallback: manual dot product
+                // Fallback
                 let dot = 0, magA = 0, magB = 0;
-                for (let i = 0; i < allTags.length; i++) {
-                    dot += keywordVec[i] * epVec[i];
-                    magA += keywordVec[i] ** 2;
+                for (let i = 0; i < dim; i++) {
+                    dot += queryVec[i] * epVec[i];
+                    magA += queryVec[i] ** 2;
                     magB += epVec[i] ** 2;
                 }
                 similarity = magA * magB > 0 ? dot / (Math.sqrt(magA) * Math.sqrt(magB)) : 0;
             }
 
-            return { ...ep, similarity, combined_score: (ep.q_value || 0) * 0.6 + similarity * 0.4 };
+            return { ...ep, similarity, combined_score: (ep.q_value || 0) * 0.4 + similarity * 0.6 };
         });
 
         scored.sort((a, b) => b.combined_score - a.combined_score);
@@ -136,13 +185,14 @@ export class SessionKernel {
             .slice(0, 3);
 
         const elapsed = performance.now() - startTime;
-        this.scores[1] = Math.min(1.0, scored.length / 10); // coverage score
+        this.scores[1] = Math.min(1.0, scored.length / 10);
 
         const result = {
             relevant_episodes: scored.slice(0, 5),
             mistakes_to_avoid: mistakes,
             lesson_summary: mistakes.map(m => m.title || m.content).join('; '),
             total_filtered: highQ.length,
+            vocab_size: dim,
             elapsed_ms: elapsed
         };
 

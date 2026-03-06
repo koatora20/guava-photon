@@ -8,8 +8,8 @@
 ;;   Result returned as f64 scalar
 
 (module
-  ;; 1 page = 64KB = 8192 f64 values (enough for 4096-dim vectors × 2)
-  (memory (export "memory") 16)
+  ;; 256 pages = 16MB = 2,097,152 f64 values (enough for 1M-dim vectors × 2)
+  (memory (export "memory") 256)
 
   ;; ============================================================
   ;; simdDotProduct: SIMD-accelerated dot product

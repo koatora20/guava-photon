@@ -107,14 +107,14 @@ describe('🔴→🟢 SIMD Correctness', async () => {
 describe('⚡ SIMD Performance Benchmark', async () => {
     const inst = await loadSIMDModule();
 
-    const dimensions = [1000, 10000, 50000];
+    const dimensions = [1000, 10000, 50000, 500000, 1000000];
 
     for (const N of dimensions) {
         it(`${N}-dim dot product: Node.js vs WASM-scalar vs WASM-SIMD`, () => {
             const a = randomVector(N);
             const b = randomVector(N);
 
-            const runs = N <= 10000 ? 1000 : 100;
+            const runs = N <= 10000 ? 1000 : N <= 100000 ? 100 : 10;
 
             // Fill WASM memory
             fillMemory(inst.exports.memory, 0, a);
@@ -159,10 +159,10 @@ describe('🛡️ SIMD Security Audit', () => {
         assert.ok(wasm.length < 2000, `Binary should be compact, got ${wasm.length}`);
     });
 
-    it('Memory is bounded (16 pages = 1MB)', () => {
-        // 16 pages × 64KB = 1MB — sufficient for 65K f64 pairs
-        // This prevents memory exhaustion attacks
-        console.log(`  Max memory: 16 pages = 1MB (65,536 f64 values)`);
+    it('Memory is bounded (256 pages = 16MB)', () => {
+        // 256 pages × 64KB = 16MB — supports 1M-dim vectors × 2
+        // Bounded memory prevents exhaustion attacks
+        console.log(`  Max memory: 256 pages = 16MB (1M-dim vectors × 2)`);
         assert.ok(true);
     });
 });
